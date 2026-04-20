@@ -3796,6 +3796,45 @@ lnsb
 green "快捷命令 sb 已同步为当前脚本版本" && sleep 2 && sb
 }
 
+sbyg_self_update_from_losehu(){
+local src_url raw_url tmp target
+src_url="https://github.com/losehu/vps/blob/main/sb.sh"
+raw_url="https://raw.githubusercontent.com/losehu/vps/main/sb.sh"
+tmp=$(mktemp)
+
+green "开始从仓库更新脚本：$src_url"
+if ! curl -fL --connect-timeout 10 --max-time 30 "$raw_url" -o "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    red "下载失败，请检查网络或仓库地址" && sleep 2 && sb
+fi
+
+if ! bash -n "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    red "下载到的脚本语法校验失败，已取消更新" && sleep 2 && sb
+fi
+
+target="${BASH_SOURCE[0]}"
+if [[ "$target" = /dev/fd/* || "$target" = /proc/* || ! -w "$target" ]]; then
+    target="/usr/bin/sb"
+fi
+
+if ! cat "$tmp" > "$target" 2>/dev/null; then
+    rm -f "$tmp"
+    red "写入 $target 失败，请检查权限" && sleep 2 && sb
+fi
+chmod +x "$target" >/dev/null 2>&1
+
+if [[ -w /usr/bin/sb ]]; then
+    cat "$tmp" > /usr/bin/sb 2>/dev/null
+    chmod +x /usr/bin/sb >/dev/null 2>&1
+fi
+
+rm -f "$tmp"
+green "脚本已更新完成：$target"
+green "快捷命令 /usr/bin/sb 已同步" && sleep 2
+exec "$target"
+}
+
 lapre(){
 json=$(curl -Ls --max-time 3 https://data.jsdelivr.com/v1/package/gh/SagerNet/sing-box)
 if echo "$json"|grep -q '"versions"'; then
@@ -5567,6 +5606,7 @@ white "-------------------------------------------------------------------------
 green " 9. 刷新并查看节点链接/订阅"
 green "10. 查看 Sing-box 运行日志"
 green "11. 一键原版BBR+FQ加速"
+green "12. 从 losehu 仓库更新脚本"
 white "----------------------------------------------------------------------------------"
 green "16. Sing-box-yg脚本使用说明书"
 white "----------------------------------------------------------------------------------"
@@ -5700,7 +5740,7 @@ case "$Input" in
  9 ) clash_sb_share;;
 10 ) sblog;;
 11 ) bbr;;
-12 ) sbyg_removed_feature;;
+12 ) sbyg_self_update_from_losehu;;
 13 ) sbyg_removed_feature;;
 14 ) sbyg_removed_feature;;
 15 ) sbyg_removed_feature;;
