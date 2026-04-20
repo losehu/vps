@@ -4113,6 +4113,58 @@ sbyg_update_one_user_ports(){
     green "已更新用户 ${name} 端口：VLESS ${old_vl} -> ${vl_new}，HY2 ${old_hy} -> ${hy_new}"
 }
 
+sbyg_show_one_user_configs(){
+    if [[ ! -s "$sbusersfile" ]]; then
+        yellow "未找到用户清单：$sbusersfile" && return 0
+    fi
+
+    # 先刷新一次，确保配置文件与当前用户参数一致
+    sbshare > /dev/null 2>&1
+
+    echo
+    jq -r '.users|to_entries[]|"\(.key+1)：\(.value.name)"' "$sbusersfile" 2>/dev/null
+    readp "输入要查看配置文件的用户序号：" idx
+    if ! [[ "$idx" =~ ^[0-9]+$ ]]; then
+        red "输入错误" && return 1
+    fi
+    idx=$((idx-1))
+
+    local name mihomo_file hy2_file
+    name=$(jq -r --argjson i "$idx" '.users[$i].name' "$sbusersfile" 2>/dev/null)
+    if [[ -z "$name" || "$name" = "null" ]]; then
+        red "序号不存在" && return 1
+    fi
+
+    mihomo_file="/etc/s-box/user-configs/mihomo-${name}.yaml"
+    hy2_file="/etc/s-box/user-configs/hysteria2-${name}.yaml"
+
+    echo
+    red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+    green "用户 ${name} 的配置文件："
+
+    echo "Mihomo/Clash Meta：${mihomo_file}"
+    if [[ -s "$mihomo_file" ]]; then
+        echo "------------------- MIHOMO YAML BEGIN -------------------"
+        cat "$mihomo_file"
+        echo "-------------------- MIHOMO YAML END --------------------"
+    else
+        yellow "未找到文件：$mihomo_file"
+    fi
+
+    echo
+    echo "Hysteria2：${hy2_file}"
+    if [[ -s "$hy2_file" ]]; then
+        echo "-------------------- HY2 YAML BEGIN --------------------"
+        cat "$hy2_file"
+        echo "--------------------- HY2 YAML END ---------------------"
+    else
+        yellow "未找到文件：$hy2_file"
+    fi
+
+    red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+    echo
+}
+
 sbusers_manage(){
     sbactive
     echo
@@ -4123,8 +4175,9 @@ sbusers_manage(){
     yellow "5：查看所有用户HTTPS订阅链接"
     yellow "6：重置单个用户HTTPS订阅密码(更新链接)"
     yellow "7：修改单个用户端口(VLESS/HY2)"
+    yellow "8：查看单个用户配置文件(Mihomo/HY2)"
     yellow "0：返回上层"
-    readp "请选择【0-7】：" menu
+    readp "请选择【0-8】：" menu
 
     if [[ "$menu" = "1" ]]; then
         echo
@@ -4201,6 +4254,10 @@ sbusers_manage(){
         sbusers_manage
     elif [[ "$menu" = "7" ]]; then
         sbyg_update_one_user_ports
+        readp "按回车返回用户管理菜单：" _
+        sbusers_manage
+    elif [[ "$menu" = "8" ]]; then
+        sbyg_show_one_user_configs
         readp "按回车返回用户管理菜单：" _
         sbusers_manage
     else
