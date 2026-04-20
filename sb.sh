@@ -613,6 +613,15 @@ sbyg_load_server_params(){
 
 inssbjsonser(){
 sbyg_load_server_params
+
+# 防止空reserved生成非法JSON（例如 "reserved": ）
+if [[ -z "$res" || "$res" = "null" ]]; then
+res='[]'
+fi
+if ! echo "$res" | jq -e . >/dev/null 2>&1; then
+res='[]'
+fi
+
 cat > /etc/s-box/sb10.json <<EOF
 {
 "log": {
@@ -855,6 +864,12 @@ $(sbyg_render_inbounds_vlh2)
 }
 EOF
 [[ "$sbnh" == "1.10" ]] && num=10 || num=11
+
+# 仅在生成配置JSON有效时才覆盖运行配置
+if ! jq -e . /etc/s-box/sb${num}.json >/dev/null 2>&1; then
+red "生成的 /etc/s-box/sb${num}.json 非法，未覆盖 /etc/s-box/sb.json"
+return 1
+fi
 cp /etc/s-box/sb${num}.json /etc/s-box/sb.json
 }
 
@@ -4067,7 +4082,10 @@ sbtraffic_show(){
 }
 
 sbyg_regen_restart(){
-    inssbjsonser
+    if ! inssbjsonser; then
+        red "配置重建失败，已取消重启，请检查上方报错"
+        return 1
+    fi
     restartsb
     sbyg_traffic_sync_rules
 }
@@ -4142,6 +4160,12 @@ sbyg_update_one_user_ports(){
         fi
         break
     done
+
+    # 两个端口都未改变时，避免无意义重启影响现有连接
+    if [[ "$vl_new" = "$old_vl" && "$hy_new" = "$old_hy" ]]; then
+        green "端口未变化，已保持原配置，不执行重启"
+        return 0
+    fi
 
     local tmp
     tmp=$(mktemp)
