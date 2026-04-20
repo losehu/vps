@@ -606,10 +606,8 @@ sbyg_load_server_params(){
         short_id=${short_id:-$sid}
     fi
 
-    if [[ -z "$certificatec_hy2" || -z "$certificatep_hy2" ]]; then
-        certificatec_hy2=${certificatec_hy2:-$(sed 's://.*::g' /etc/s-box/sb.json | jq -r '.inbounds[] | select(.type=="hysteria2") | .tls.certificate_path' 2>/dev/null | head -n 1)}
-        certificatep_hy2=${certificatep_hy2:-$(sed 's://.*::g' /etc/s-box/sb.json | jq -r '.inbounds[] | select(.type=="hysteria2") | .tls.key_path' 2>/dev/null | head -n 1)}
-    fi
+    certificatec_hy2='/etc/s-box/cert.pem'
+    certificatep_hy2='/etc/s-box/private.key'
 }
 
 inssbjsonser(){
@@ -1319,14 +1317,14 @@ cat <<EOF
         "inet6_range": "fc00::/18"
       }
         ],
-        "rules": [
-            {
-                "rule_set": "geosite-cn",
-                "clash_mode": "Rule",
-                "server": "aliDns"
-            },
-            {
-                "clash_mode": "Direct",
+            "tls": {
+                "enabled": true,
+                "alpn": [
+                    "h3"
+                ],
+                "certificate_path": "/etc/s-box/cert.pem",
+                "key_path": "/etc/s-box/private.key"
+            }
                 "server": "local"
             },
             {
@@ -4439,10 +4437,9 @@ if [[ "$hy2_key_path" = '/etc/s-box/private.key' ]]; then
     sb_hy2_ip=$server_ip
     ins_hy2=1
 else
-    hy2_name=$(cat /root/ygkkkca/ca.log 2>/dev/null)
-    [[ -z "$hy2_name" ]] && hy2_name=$server_ipcl
-    sb_hy2_ip=$hy2_name
-    ins_hy2=0
+    hy2_name=www.bing.com
+    sb_hy2_ip=$server_ip
+    ins_hy2=1
 fi
 
 local v2sub=""
