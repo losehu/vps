@@ -1,5 +1,6 @@
 #!/bin/bash
 export LANG=en_US.UTF-8
+export SBYG_BUILD_VERSION="losehu-v2026.04.21-01"
 red='\033[0;31m'
 green='\033[0;32m'
 yellow='\033[0;33m'
@@ -870,6 +871,20 @@ if ! jq -e . /etc/s-box/sb${num}.json >/dev/null 2>&1; then
 red "生成的 /etc/s-box/sb${num}.json 非法，未覆盖 /etc/s-box/sb.json"
 return 1
 fi
+
+# 覆盖前再做sing-box语义校验，失败则不覆盖运行配置
+if /etc/s-box/sing-box check -c /etc/s-box/sb${num}.json >/dev/null 2>&1; then
+:
+elif /etc/s-box/sing-box run -D -c /etc/s-box/sb${num}.json >/dev/null 2>&1; then
+:
+else
+red "生成的 /etc/s-box/sb${num}.json 未通过 sing-box 检查，未覆盖 /etc/s-box/sb.json"
+return 1
+fi
+
+local sb_backup
+sb_backup="/etc/s-box/sb.json.bak.$(date +%F-%H%M%S)"
+cp /etc/s-box/sb.json "$sb_backup" >/dev/null 2>&1
 cp /etc/s-box/sb${num}.json /etc/s-box/sb.json
 }
 
@@ -4086,6 +4101,20 @@ sbyg_regen_restart(){
         red "配置重建失败，已取消重启，请检查上方报错"
         return 1
     fi
+
+    if ! jq -e . /etc/s-box/sb.json >/dev/null 2>&1; then
+        red "/etc/s-box/sb.json 非法，已取消重启"
+        return 1
+    fi
+    if /etc/s-box/sing-box check -c /etc/s-box/sb.json >/dev/null 2>&1; then
+        :
+    elif /etc/s-box/sing-box run -D -c /etc/s-box/sb.json >/dev/null 2>&1; then
+        :
+    else
+        red "sing-box 配置检查失败，已取消重启"
+        return 1
+    fi
+
     restartsb
     sbyg_traffic_sync_rules
 }
@@ -5636,6 +5665,16 @@ green "16. Sing-box-yg脚本使用说明书"
 white "----------------------------------------------------------------------------------"
 green " 0. 退出脚本"
 red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+script_path="${BASH_SOURCE[0]}"
+if command -v sha256sum >/dev/null 2>&1; then
+script_hash=$(sha256sum "$script_path" 2>/dev/null | awk '{print $1}' | cut -c1-12)
+elif command -v shasum >/dev/null 2>&1; then
+script_hash=$(shasum -a 256 "$script_path" 2>/dev/null | awk '{print $1}' | cut -c1-12)
+else
+script_hash="unknown"
+fi
+echo -e "内置脚本版本号：${bblue}${SBYG_BUILD_VERSION}${plain}"
+echo -e "当前脚本哈希：${bblue}${script_hash}${plain}"
 insV=$(cat /etc/s-box/v 2>/dev/null)
 latestV=$(curl -sL https://raw.githubusercontent.com/yonggekkk/sing-box-yg/main/version | awk -F "更新内容" '{print $1}' | head -n 1)
 if [ -f /etc/s-box/v ]; then
