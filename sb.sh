@@ -4895,8 +4895,8 @@ while read -r u; do
     pass=$(echo "$u" | jq -r '.password')
     echo
     yellow "用户：$name"
-    echo "Clash Verge Rev 订阅：https://${sub_host}:${sub_port}/${name}/${pass}/clash.yaml"
-    echo "小火箭(Shadowrocket)订阅：https://${sub_host}:${sub_port}/${name}/${pass}/shadowrocket.txt"
+    echo "Clash Verge Rev 订阅：https://${name}:${pass}@${sub_host}:${sub_port}/${name}/clash.yaml"
+    echo "小火箭(Shadowrocket)订阅：https://${name}:${pass}@${sub_host}:${sub_port}/${name}/shadowrocket.txt"
 done < <(jq -c '.users[]' "$users_auth_file")
 red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
 echo
@@ -5016,6 +5016,8 @@ mv "$users_auth_tmp" "$users_auth_file"
 
 cat > /etc/s-box/sbyg_https_sub_server.py <<'PYEOF'
 #!/usr/bin/env python3
+import base64
+import binascii
 import json
 import os
 import ssl
@@ -5044,20 +5046,48 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
 
+    def require_auth(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="sbyg-sub"')
+        self.end_headers()
+
+    def parse_basic_auth(self):
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Basic "):
+            return None, None
+        token = auth[6:].strip()
+        try:
+            raw = base64.b64decode(token).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            return None, None
+        if ":" not in raw:
+            return None, None
+        username, password = raw.split(":", 1)
+        return username, password
+
     def do_GET(self):
         path = self.path.split("?", 1)[0]
         parts = [p for p in path.strip("/").split("/") if p]
-        if len(parts) != 3:
+        if len(parts) != 2:
             self.send_error(404)
             return
 
-        username, password, filename = parts
+        path_username, filename = parts
         if filename not in ("clash.yaml", "shadowrocket.txt", "hysteria2.yaml"):
             self.send_error(404)
             return
 
+        username, password = self.parse_basic_auth()
+        if not username:
+            self.require_auth()
+            return
+
         users = load_users()
         if users.get(username) != password:
+            self.require_auth()
+            return
+
+        if username != path_username:
             self.send_error(403)
             return
 
@@ -5132,8 +5162,8 @@ while read -r u; do
     pass=$(echo "$u" | jq -r '.password')
     echo
     yellow "用户：$name"
-    echo "Clash Verge Rev 订阅：https://${sub_host}:${sub_port}/${name}/${pass}/clash.yaml"
-    echo "小火箭(Shadowrocket)订阅：https://${sub_host}:${sub_port}/${name}/${pass}/shadowrocket.txt"
+    echo "Clash Verge Rev 订阅：https://${name}:${pass}@${sub_host}:${sub_port}/${name}/clash.yaml"
+    echo "小火箭(Shadowrocket)订阅：https://${name}:${pass}@${sub_host}:${sub_port}/${name}/shadowrocket.txt"
 done < <(jq -c '.users[]' "$users_auth_file")
 yellow "提示：HTTPS订阅当前端口为 ${sub_port}，域名需解析到本机IP并放行该端口；若为自签证书，客户端需允许不安全证书"
 red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -5233,8 +5263,8 @@ if [[ -s /etc/s-box/https_sub_users.json && -s /etc/s-box/https_sub_port.log ]];
     if [[ -n "$sub_pass" && "$sub_pass" != "null" ]]; then
         echo
         green "用户 ${name} 的订阅链接："
-        echo "Clash Verge Rev 订阅：https://${sub_host}:${sub_port}/${name}/${sub_pass}/clash.yaml"
-        echo "小火箭(Shadowrocket)订阅：https://${sub_host}:${sub_port}/${name}/${sub_pass}/shadowrocket.txt"
+        echo "Clash Verge Rev 订阅：https://${name}:${sub_pass}@${sub_host}:${sub_port}/${name}/clash.yaml"
+        echo "小火箭(Shadowrocket)订阅：https://${name}:${sub_pass}@${sub_host}:${sub_port}/${name}/shadowrocket.txt"
     else
         yellow "该用户暂无HTTPS订阅密码，请先在 9->3->1 部署/更新订阅服务"
     fi
