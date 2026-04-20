@@ -11,9 +11,14 @@ green(){ echo -e "\033[32m\033[01m$1\033[0m";}
 yellow(){ echo -e "\033[33m\033[01m$1\033[0m";}
 blue(){ echo -e "\033[36m\033[01m$1\033[0m";}
 white(){ echo -e "\033[37m\033[01m$1\033[0m";}
-readp(){ read -p "$(yellow "$1")" $2;}
+readp(){
+local __prompt="$1"
+local __var="$2"
+read -e -r -p "$(yellow "$__prompt")" "$__var"
+}
 [[ $EUID -ne 0 ]] && yellow "请以root模式运行脚本" && exit
-stty erase $'\b' 2>/dev/null || stty erase '^H' 2>/dev/null
+stty sane 2>/dev/null
+stty erase '^?' 2>/dev/null || stty erase '^H' 2>/dev/null
 #[[ -e /etc/hosts ]] && grep -qE '^ *172.65.251.78 gitlab.com' /etc/hosts || echo -e '\n172.65.251.78 gitlab.com' >> /etc/hosts
 if [[ -f /etc/redhat-release ]]; then
 release="Centos"
@@ -4028,6 +4033,86 @@ sbyg_regen_restart(){
     sbyg_traffic_sync_rules
 }
 
+sbyg_update_one_user_ports(){
+    if [[ ! -s "$sbusersfile" ]]; then
+        yellow "未找到用户清单：$sbusersfile" && return 0
+    fi
+
+    echo
+    jq -r '.users|to_entries[]|"\(.key+1)：\(.value.name)  VLESS:\(.value.vless_port)  HY2:\(.value.hy2_port)"' "$sbusersfile" 2>/dev/null
+    readp "输入要修改端口的用户序号：" idx
+    if ! [[ "$idx" =~ ^[0-9]+$ ]]; then
+        red "输入错误" && return 1
+    fi
+    idx=$((idx-1))
+
+    local name old_vl old_hy
+    name=$(jq -r --argjson i "$idx" '.users[$i].name' "$sbusersfile" 2>/dev/null)
+    old_vl=$(jq -r --argjson i "$idx" '.users[$i].vless_port' "$sbusersfile" 2>/dev/null)
+    old_hy=$(jq -r --argjson i "$idx" '.users[$i].hy2_port' "$sbusersfile" 2>/dev/null)
+    if [[ -z "$name" || "$name" = "null" ]]; then
+        red "序号不存在" && return 1
+    fi
+
+    local used_ports vl_new hy_new
+    used_ports=" $(jq -r --argjson i "$idx" '.users|to_entries[]|select(.key!=$i)|.value.vless_port,.value.hy2_port' "$sbusersfile" 2>/dev/null | xargs) "
+
+    while true; do
+        readp "用户 ${name} 当前VLESS端口为 ${old_vl}，输入新端口(回车随机，输入0保持不变)：" vl_new
+        if [[ -z "$vl_new" ]]; then
+            vl_new=$(sbyg_pick_port "$used_ports")
+            break
+        fi
+        if [[ "$vl_new" = "0" ]]; then
+            vl_new="$old_vl"
+            break
+        fi
+        if ! [[ "$vl_new" =~ ^[0-9]+$ ]] || [[ "$vl_new" -lt 1 || "$vl_new" -gt 65535 ]]; then
+            red "VLESS端口必须是 1-65535 的数字" && continue
+        fi
+        if [[ "$used_ports" =~ " $vl_new " ]]; then
+            red "VLESS端口与其他用户冲突" && continue
+        fi
+        if [[ "$vl_new" != "$old_vl" ]] && sbyg_port_in_use "$vl_new"; then
+            red "VLESS端口已被系统占用" && continue
+        fi
+        break
+    done
+    used_ports+="$vl_new "
+
+    while true; do
+        readp "用户 ${name} 当前HY2端口为 ${old_hy}，输入新端口(回车随机，输入0保持不变)：" hy_new
+        if [[ -z "$hy_new" ]]; then
+            hy_new=$(sbyg_pick_port "$used_ports")
+        elif [[ "$hy_new" = "0" ]]; then
+            hy_new="$old_hy"
+        elif ! [[ "$hy_new" =~ ^[0-9]+$ ]] || [[ "$hy_new" -lt 1 || "$hy_new" -gt 65535 ]]; then
+            red "HY2端口必须是 1-65535 的数字"
+            continue
+        elif [[ "$used_ports" =~ " $hy_new " ]]; then
+            red "HY2端口与其他用户冲突"
+            continue
+        elif [[ "$hy_new" != "$old_hy" ]] && sbyg_port_in_use "$hy_new"; then
+            red "HY2端口已被系统占用"
+            continue
+        fi
+
+        if [[ "$hy_new" = "$vl_new" ]]; then
+            red "同一用户的VLESS和HY2端口不能相同"
+            continue
+        fi
+        break
+    done
+
+    local tmp
+    tmp=$(mktemp)
+    jq --argjson i "$idx" --argjson vl "$vl_new" --argjson hy "$hy_new" '.users[$i].vless_port=$vl | .users[$i].hy2_port=$hy' "$sbusersfile" > "$tmp" && mv "$tmp" "$sbusersfile"
+
+    sbyg_regen_restart
+    sbshare > /dev/null 2>&1
+    green "已更新用户 ${name} 端口：VLESS ${old_vl} -> ${vl_new}，HY2 ${old_hy} -> ${hy_new}"
+}
+
 sbusers_manage(){
     sbactive
     echo
@@ -4037,8 +4122,9 @@ sbusers_manage(){
     yellow "4：查看每用户流量统计"
     yellow "5：查看所有用户HTTPS订阅链接"
     yellow "6：重置单个用户HTTPS订阅密码(更新链接)"
+    yellow "7：修改单个用户端口(VLESS/HY2)"
     yellow "0：返回上层"
-    readp "请选择【0-6】：" menu
+    readp "请选择【0-7】：" menu
 
     if [[ "$menu" = "1" ]]; then
         echo
@@ -4111,6 +4197,10 @@ sbusers_manage(){
         sbusers_manage
     elif [[ "$menu" = "6" ]]; then
         sbyg_https_sub_reset_one_user_password
+        readp "按回车返回用户管理菜单：" _
+        sbusers_manage
+    elif [[ "$menu" = "7" ]]; then
+        sbyg_update_one_user_ports
         readp "按回车返回用户管理菜单：" _
         sbusers_manage
     else
@@ -4926,7 +5016,6 @@ mv "$users_auth_tmp" "$users_auth_file"
 
 cat > /etc/s-box/sbyg_https_sub_server.py <<'PYEOF'
 #!/usr/bin/env python3
-import base64
 import json
 import os
 import ssl
@@ -5098,16 +5187,74 @@ else
 fi
 }
 
+sbyg_show_one_user_share(){
+if [[ ! -s "$sbusersfile" ]]; then
+    red "未找到用户清单：$sbusersfile" && return 1
+fi
+
+# 先刷新生成文件，但不全量打印
+sbshare > /dev/null 2>&1
+
+echo
+green "请选择要查看的用户："
+jq -r '.users|to_entries[]|"\(.key+1)：\(.value.name)"' "$sbusersfile" 2>/dev/null
+readp "输入用户序号：" idx
+if ! [[ "$idx" =~ ^[0-9]+$ ]]; then
+    red "输入错误" && return 1
+fi
+idx=$((idx-1))
+
+local name vl_link hy2_link
+name=$(jq -r --argjson i "$idx" '.users[$i].name' "$sbusersfile" 2>/dev/null)
+if [[ -z "$name" || "$name" = "null" ]]; then
+    red "序号不存在" && return 1
+fi
+
+vl_link=$(grep -E "#vl-${name}-" /etc/s-box/jhdy.txt 2>/dev/null | head -n 1)
+hy2_link=$(grep -E "#hy2-${name}-" /etc/s-box/jhdy.txt 2>/dev/null | head -n 1)
+
+echo
+red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+green "用户 ${name} 的分享链接："
+echo "-------------------- LINKS BEGIN --------------------"
+[[ -n "$vl_link" ]] && echo "$vl_link" || yellow "未找到VLESS链接"
+[[ -n "$hy2_link" ]] && echo "$hy2_link" || yellow "未找到HY2链接"
+echo "--------------------- LINKS END ---------------------"
+
+if [[ -s /etc/s-box/https_sub_users.json && -s /etc/s-box/https_sub_port.log ]]; then
+    local sub_host sub_port sub_pass
+    sub_host=$(cat /etc/s-box/https_sub_host.log 2>/dev/null)
+    if [[ -z "$sub_host" ]]; then
+        sub_host=$(cat /etc/s-box/server_ip.log 2>/dev/null)
+        [[ -z "$sub_host" ]] && sub_host=$(curl -s4m5 icanhazip.com -k || curl -s6m5 icanhazip.com -k)
+    fi
+    sub_port=$(cat /etc/s-box/https_sub_port.log 2>/dev/null)
+    sub_pass=$(jq -r --arg n "$name" '.users[]|select(.username==$n)|.password' /etc/s-box/https_sub_users.json 2>/dev/null | head -n 1)
+    if [[ -n "$sub_pass" && "$sub_pass" != "null" ]]; then
+        echo
+        green "用户 ${name} 的订阅链接："
+        echo "Clash Verge Rev 订阅：https://${sub_host}:${sub_port}/${name}/${sub_pass}/clash.yaml"
+        echo "小火箭(Shadowrocket)订阅：https://${sub_host}:${sub_port}/${name}/${sub_pass}/shadowrocket.txt"
+    else
+        yellow "该用户暂无HTTPS订阅密码，请先在 9->3->1 部署/更新订阅服务"
+    fi
+else
+    yellow "未检测到HTTPS订阅服务，请先在 9->3->1 部署"
+fi
+red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+echo
+}
+
 clash_sb_share(){
 sbactive
 echo
-yellow "1：刷新并查看所有用户分享链接（VLESS+Hy2）"
+yellow "1：刷新并按用户查看分享/订阅链接"
 yellow "2：查看每用户流量统计"
 yellow "3：部署 HTTPS 用户订阅（账号密码）"
 yellow "0：返回上层"
 readp "请选择【0-3】：" menu
 if [ "$menu" = "1" ]; then
-sbshare
+sbyg_show_one_user_share
 readp "按回车返回主菜单：" _
 sb
 elif  [ "$menu" = "2" ]; then
