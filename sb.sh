@@ -4196,11 +4196,58 @@ sbyg_update_one_user_ports(){
         return 0
     fi
 
-    local tmp
-    tmp=$(mktemp)
-    jq --argjson i "$idx" --argjson vl "$vl_new" --argjson hy "$hy_new" '.users[$i].vless_port=$vl | .users[$i].hy2_port=$hy' "$sbusersfile" > "$tmp" && mv "$tmp" "$sbusersfile"
+    local tmp users_backup sb_backup sb_tmp direct_update_ok
+    users_backup=$(mktemp)
+    cp "$sbusersfile" "$users_backup" >/dev/null 2>&1 || { red "备份用户文件失败"; rm -f "$users_backup"; return 1; }
 
-    sbyg_regen_restart
+    tmp=$(mktemp)
+    if ! jq --argjson i "$idx" --argjson vl "$vl_new" --argjson hy "$hy_new" '.users[$i].vless_port=$vl | .users[$i].hy2_port=$hy' "$sbusersfile" > "$tmp"; then
+        red "写入用户端口失败"
+        rm -f "$tmp" "$users_backup"
+        return 1
+    fi
+    mv "$tmp" "$sbusersfile"
+
+    direct_update_ok=0
+    if [[ -s /etc/s-box/sb.json ]]; then
+        sb_backup=$(mktemp)
+        cp /etc/s-box/sb.json "$sb_backup" >/dev/null 2>&1 || true
+        sb_tmp=$(mktemp)
+
+        if jq --arg n "$name" --argjson vl "$vl_new" --argjson hy "$hy_new" '
+            (.inbounds[] | select(.tag==("vless-"+$n)) | .listen_port) = $vl |
+            (.inbounds[] | select(.tag==("hy2-"+$n)) | .listen_port) = $hy
+        ' /etc/s-box/sb.json > "$sb_tmp" 2>/dev/null \
+        && jq -e . "$sb_tmp" >/dev/null 2>&1 \
+        && { /etc/s-box/sing-box check -c "$sb_tmp" >/dev/null 2>&1 || /etc/s-box/sing-box run -D -c "$sb_tmp" >/dev/null 2>&1; }; then
+            mv "$sb_tmp" /etc/s-box/sb.json
+            direct_update_ok=1
+        else
+            rm -f "$sb_tmp"
+        fi
+    fi
+
+    if [[ "$direct_update_ok" = "1" ]]; then
+        if ! restartsb; then
+            [[ -n "$sb_backup" && -s "$sb_backup" ]] && cp "$sb_backup" /etc/s-box/sb.json >/dev/null 2>&1
+            cp "$users_backup" "$sbusersfile" >/dev/null 2>&1
+            red "重启失败，已回滚端口修改"
+            rm -f "$users_backup" "$sb_backup"
+            return 1
+        fi
+        sbyg_traffic_sync_rules
+    else
+        # 若无法安全原地修改运行配置，则使用原流程（已有校验）
+        if ! sbyg_regen_restart; then
+            [[ -n "$sb_backup" && -s "$sb_backup" ]] && cp "$sb_backup" /etc/s-box/sb.json >/dev/null 2>&1
+            cp "$users_backup" "$sbusersfile" >/dev/null 2>&1
+            red "配置重建失败，已回滚端口修改"
+            rm -f "$users_backup" "$sb_backup"
+            return 1
+        fi
+    fi
+
+    rm -f "$users_backup" "$sb_backup"
     sbshare > /dev/null 2>&1
     green "已更新用户 ${name} 端口：VLESS ${old_vl} -> ${vl_new}，HY2 ${old_hy} -> ${hy_new}"
 }
